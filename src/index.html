@@ -1,0 +1,261 @@
+<!DOCTYPE HTML>
+<html>
+   <head>
+   <meta charset="utf-8">
+   <title>测试程序</title>
+      <style>
+      	.btn {
+            display: inline-block;
+            margin-bottom: 0;
+            font-weight: 400;
+            text-align: center;
+            vertical-align: middle;
+            -ms-touch-action: manipulation;
+            touch-action: manipulation;
+            cursor: pointer;
+            background-image: none;
+            border: 1px solid transparent;
+            white-space: nowrap;
+            padding: 6px 12px;
+            font-size: 14px;
+            line-height: 1.42857;
+            border-radius: 4px;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .follow {
+            border-color: #42c02e;
+            padding: 8px 22px;
+            font-size: 16px;
+            font-weight: 400;
+            line-height: normal;
+        }
+        .btn-start {
+            border-radius: 40px;
+            color: #fff;
+            background-color: #42c02e;
+            border-color: #42c02e;
+        }
+        .btn-close {
+            border-radius: 40px;
+            color: #fff;
+            background-color: #ea6f5a;;
+            border-color: #ea6f5a;
+        }
+        a {
+            text-decoration: none;
+        }
+      </style>
+      <script>
+        //const ActionCable = require('actioncable');
+        const kafka = require('kafka-node');
+        const fs = require('fs');
+        //let offset = 0;
+        let service_state = 'off';
+        var request = require('request');
+        var ip = getIPAdress()
+        let white_list = ['qq']
+        //const ipc = require('electron').ipcRenderer
+        const dialog = require('electron').remote.dialog
+        const exec = require('child_process').exec;
+        fs.writeFileSync('./kafka_err.log', '<p>' + getDate() + ' 错误日志</p>\r\n')
+	      fs.writeFileSync('./kafka.log', '<p>' + getDate() + ' 日志分析</p>\r\n')
+        //try{
+        //  const data = fs.readFileSync('./data.json');
+        //  offset = parseInt(JSON.parse(data.toString()).num) + 1
+        //}catch(e){  
+        //  fs.appendFileSync('./kafka.log', '<p>' + getDate() + ' 打开数据文件</p>\r\n')
+          //showLogs();
+        //}
+        let consumer
+
+        //ipc.on('main-process-messages', (event, arg) => {
+        //	console.log(event);
+        //    console.log(arg);
+        //});
+
+        function startKfka(){
+          if(service_state == 'off'){
+          	const HighLevelProducer = kafka.HighLevelProducer;
+            
+            const client = new kafka.KafkaClient({
+              kafkaHost: '192.168.199.128:9092'
+            });
+            const offset = new kafka.Offset(client);
+            fs.appendFileSync('./kafka.log', '<p>' + getDate() + ' 启动服务中......</p>\r\n')
+            showLogs()
+            
+            const admin = new kafka.Admin(client);
+            admin.listTopics((err, res) => {
+              if(err){
+              	fs.appendFileSync('./kafka_err.log', getDate() + err + '\r\n')
+              	dialog.showErrorBox('Error','服务启动失败,请检查网络状态');
+              }else{
+              	const exist_topics = res[1].metadata
+              	if(!exist_topics.hasOwnProperty(ip.toString())){
+              	  const producer = new HighLevelProducer(client);
+              	  producer.createTopics([ip.toString()], false, function (err, data) {
+                    if(err){
+                      fs.appendFileSync('./kafka_err.log', getDate() + err + '\r\n')
+                  	  dialog.showErrorBox('Error','服务启动失败,请检查网络状态');
+                  	}else{
+                  	  handle_message(client, offset)
+                  	}
+                  });
+              	}else{
+              	  handle_message(client, offset)
+              	}
+              }
+            });
+            //fs.writeFileSync('./data.json', JSON.stringify({num: message.offset}));
+          }else{
+          	dialog.showErrorBox('Error','服务已经启动,请勿重复启动');
+          }
+        }
+
+        function handle_message(client, offset){
+          const Consumer = kafka.Consumer;
+          offset.fetch([
+            { topic: ip.toString(), partition: 0, time: -1, maxNum: 1 }
+          ], function (err, data) {
+            if (err){
+              fs.appendFileSync('./kafka_err.log', getDate() + err + '\r\n')
+              handle_message(client, offset)
+              return
+            }
+            consumer = new Consumer(
+              client,
+              [
+                { topic: ip.toString(), offset: data[ip.toString()][0][0], partition: 0 }  
+              ],
+              {
+                autoCommit: false,
+                fromOffset: true,
+              }
+            );
+            service_state = 'on'
+            fs.appendFileSync('./kafka.log', '<p>' + getDate() + ' 启动成功</p>\r\n')
+            showLogs()
+            consumer.on('message', function (message) {
+              var res = JSON.parse(message.value)
+              var n_s = parseInt(new Date().getTime()/1000)
+              if(white_list.indexOf(res.program) > -1){
+                if((n_s - res.ts) > 5){
+                }else{
+                  let judge_cmd = 'tasklist | find /i "'+res.program+'.exe"'
+                  exec(judge_cmd, (err, stdout, stderr) => {
+                    if (err){
+                  	  fs.appendFileSync('./kafka.log', '<p>' + getDate() + ' 接收到指令,正在打开指定程序</p>\r\n')
+                  	  showLogs();
+                  	  let cmdStr = "for /r c:/ %i in (*"+res.program+".exe*) do @echo %i";
+                  	  exec(cmdStr, (err, stdout, stderr) => {
+                  	  	if (err){
+                  	  	  if(res.need_response) reply_message(res.mid, false, '该机器上未安装实训系统')
+                  	  	  dialog.showErrorBox('Error', '该机器上未安装实训系统')
+                  	  	}else{
+                  	  	  if(res.command == 'open_program'){
+                  	  	  	if(res.need_response) reply_message(res.mid, true)
+                  	  	  	let openCmd = 'start "dummyclient" "' + stdout.replace(/\\/g, "/") + '"'
+                  	  	    exec(openCmd)
+                  	  	  }else{
+                  	  	  	if(res.need_response) reply_message(res.mid, false, '错误指令')
+                  	  	  	dialog.showErrorBox('Error', '错误指令')
+                  	  	  }
+                  	  	}
+                  	  });
+                  	  return;
+                    }else{
+                      if(res.need_response) reply_message(res.mid, false, '实训系统已启动,请勿重复发送启动指令')
+                      dialog.showErrorBox('Error', '实训系统已启动,请勿重复发送启动指令')
+                    }
+                  })
+                }
+              }else{
+                if(res.need_response) reply_message(res.mid, false, '程序不在白名单内')
+                dialog.showErrorBox('Error', '程序不在白名单内')
+              }
+              
+            });
+          }); 
+        }
+        
+
+        function stopKfka(type){
+          consumer.close(true, function(){
+          	if(type == null || type == undefined){
+          	  fs.appendFileSync('./kafka.log', '<p>' + getDate() + ' 服务成功关闭</p>\r\n')
+          	  service_state = 'off';
+          	  showLogs();
+          	}
+          });
+        }
+
+        function getIPAdress() {
+          var interfaces = require('os').networkInterfaces();　　
+          for (var devName in interfaces) {　　　　
+            var iface = interfaces[devName];　　　　　　
+            for (var i = 0; i < iface.length; i++) {
+              var alias = iface[i];
+              if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
+                return alias.address;
+              }
+            }　　
+          }
+        }
+
+        function getDate(){
+          var date=new Date();  
+          var year=date.getFullYear(); 
+          var mon=date.getMonth()+1; 
+          var da=date.getDate();  
+          var h=date.getHours(); 
+          var m=date.getMinutes();  
+          var s=date.getSeconds();
+          return year+'年'+mon+'月'+da+'日'+' '+h+':'+m+':'+s    
+        }
+
+        window.onload = function(){
+          startKfka();
+        }
+
+        function showLogs(){
+          const data = fs.readFileSync('./kafka.log');
+          document.getElementById('log').innerHTML = data.toString();
+        }
+
+        function reply_message(mid, is_execute, err=null){
+          request.post({
+            url: 'http://wisdomteaching.192.168.199.128.xip.io/win_client/reply',
+            method: 'POST',
+            json: {mid: mid, is_execute: is_execute, err: err}
+            }, (err, res, body) => {
+            if(err){
+              console.log(err)
+            }else{
+              console.log(res)
+            }
+          })
+        }
+      </script>
+      <style type="text/css">
+      	p{
+      	  margin: 0px;
+      	  margin-top: 5px;
+      	}
+      </style>
+   </head>
+   <body>
+   
+      <div>
+        <a href="javascript:void(0)" class="btn btn-start follow" onclick="startKfka()">启动服务</a>
+        <a href="javascript:void(0)" class="btn btn-close follow" onclick="stopKfka()">关闭服务</a>
+      </div>
+      <div>
+      	<h3>日志</h3>
+      	<div id="log" style="color:#cccccc;font-size:15px"></p>
+      </div> 
+      
+   </body>
+</html>
