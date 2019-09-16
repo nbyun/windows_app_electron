@@ -1,0 +1,1 @@
+window应用程序，用node开发，框架是electron，主要用于接受kafka消息用于操作windows系统，例如打开QQ或者一些bash脚本
